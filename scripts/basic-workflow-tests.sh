@@ -37,7 +37,7 @@ export CONFIG_HOME
 export DATA_HOME
 export CONFIG_HOME
 
-
+MODEL_MIXTRAL_GPTQ="TheBloke/Mixtral-8x7b-Instruct-v0.1-GPTQ"
 
 ########################################
 # This function initializes the directory
@@ -133,10 +133,10 @@ test_download() {
         ilab model download --repository instructlab/granite-7b-lab-GGUF --filename granite-7b-lab-Q4_K_M.gguf
     elif [ "$BACKEND" = "vllm" ]; then
         step Downloading the model for vLLM
-        ilab download --repository instructlab/merlinite-7b-lab
+        ilab download --repository "${MODEL_MIXTRAL_GPTQ}"
     elif [ "$MIXTRAL" -eq 1 ]; then
         step Downloading the mixtral model
-        ilab model download --repository TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF --filename mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf --hf-token "${HF_TOKEN}"
+        ilab model download --repository TheBloke/Mixtral-8x7b-Instruct-v0.1-GGUF --filename mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf --hf-token "${HF_TOKEN}"
     else
         step Downloading the default model
         ilab model download
@@ -154,6 +154,8 @@ test_serve() {
         model="${1:-${DATA_HOME}/instructlab/models/granite-7b-lab-Q4_K_M.gguf}"
     elif [ "${MIXTRAL}" -eq 1 ]; then
         model="${1:-${DATA_HOME}/instructlab/models/mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf}"
+    elif [ "$BACKEND" = "vllm" ]; then
+        model="${1:-${DATA_HOME}/instructlab/models/${MODEL_MIXTRAL_GPTQ}}"
     else
         model="${1:-}"
     fi
@@ -162,21 +164,29 @@ test_serve() {
         SERVE_ARGS+=("--model-path" "${model}")
     fi
     if [ "$BACKEND" = "vllm" ]; then
-        SERVE_ARGS+=("--model-path" "${DATA_HOME}/instructlab/models/instructlab/merlinite-7b-lab")
+        SERVE_ARGS+=("--model-family" "mixtral")
+        SERVE_ARGS+=("--" "-tp=4")
     fi
 
     task Serve the model
+    touch serve.log
+    tail -f serve.log &
+    TPID=$!
     ilab model serve "${SERVE_ARGS[@]}" &> serve.log &
     wait_for_server
+    kill "$TPID"
 }
 
 test_chat() {
     task Chat with the model
-    CHAT_ARGS=()
-    if [ "$MIXTRAL" -eq 1 ]; then
+    CHAT_ARGS=("--endpoint-url" "http://localhost:8000/v1")
+    if [[ "$MIXTRAL" -eq 1 || "$BACKEND" == "vllm" ]]; then
         CHAT_ARGS+=("--model-family" "mixtral")
     fi
-    printf 'Say "Hello" and nothing else\n' | ilab model chat -qq "${CHAT_ARGS[@]}"
+    if [[ "$BACKEND" == "vllm" ]]; then
+        CHAT_ARGS+=("--model" "${DATA_HOME}/instructlab/models/${MODEL_MIXTRAL_GPTQ}")
+    fi
+    ilab model chat -qq "${CHAT_ARGS[@]}" 'Say "Hello" and nothing else\n'
 }
 
 test_taxonomy() {
@@ -210,12 +220,13 @@ test_taxonomy() {
 
 test_generate() {
     task Generate synthetic data
+    GENERATE_ARGS+=("--endpoint-url" "http://localhost:8000/v1")
     if [ "$GRANITE" -eq 1 ]; then
         GENERATE_ARGS+=("--model" "${DATA_HOME}/instructlab/models/granite-7b-lab-Q4_K_M.gguf")
     elif [ "$MIXTRAL" -eq 1 ]; then
         GENERATE_ARGS+=("--model" "${DATA_HOME}/instructlab/models/mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf")
     elif [ "$BACKEND" = "vllm" ]; then
-        GENERATE_ARGS+=("--model" "${DATA_HOME}/instructlab/models/instructlab/merlinite-7b-lab")
+        GENERATE_ARGS+=("--model" "${DATA_HOME}/instructlab/models/${MODEL_MIXTRAL_GPTQ}")
     fi
     if [ "$SDG_PIPELINE" = "full" ]; then
         GENERATE_ARGS+=("--pipeline" "full")
@@ -327,10 +338,10 @@ test_exec() {
 }
 
 wait_for_server(){
-    if ! timeout 120 bash -c '
+    if ! timeout 240 bash -c '
         until curl -sS http://localhost:8000/docs &> /dev/null; do
             echo "waiting for server to start"
-            sleep 1
+            sleep 5
         done
     '; then
         echo "server did not start"
